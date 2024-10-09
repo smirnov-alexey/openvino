@@ -4,6 +4,7 @@
 
 #include "dcoff.hpp"
 
+#include "../../lazy_tensor.hpp"
 #include "../../logging.hpp"
 #include "../../util.hpp"
 #include "../partitioning.hpp"  // Subgraph
@@ -115,25 +116,30 @@ ClosureRemap build_remap(const Function& fbody, const DCOFFParams& params_to) {
 
 void apply_remap(Subgraph& fcall, const ClosureRemap& m) {
     std::vector<ov::Tensor> new_closure;
+    std::vector<ov::npuw::weights::LazyTensor> new_lazy_closure;
     std::vector<ov::Tensor> new_scales;
     std::vector<ov::Tensor> new_zerops;
 
-    // For a new_closure vector by rearranging the old one.  Also
+    // For a new_lazy_closure vector by rearranging the old one.  Also
     // reserve a new_scales vector to have the same size, filled with
     // empty tensors by default.
     for (auto&& i : m.closure_remap) {
+        new_lazy_closure.push_back(fcall._lazy_closure[i]);
         new_closure.push_back(fcall._closure[i]);
 
         auto scale_iter = m.scale_remap.find(i);
-        new_scales.push_back(scale_iter != m.scale_remap.end() ? fcall._closure[scale_iter->second] : ov::Tensor());
-        // Check for asymmetric zero points and add them to new_zerops
         auto zerop_iter = m.zerop_remap.find(i);
-        const auto& zerop = zerop_iter != m.zerop_remap.end() ? fcall._closure[zerop_iter->second] : m.zero_points[i];
-        new_zerops.push_back(zerop);
+
+        new_scales.push_back(scale_iter != m.scale_remap.end() ? fcall._lazy_closure[scale_iter->second].eval()
+                                                               : ov::Tensor());
+        // Check for asymmetric zero points and add them to new_zerops
+        new_zerops.push_back(zerop_iter != m.zerop_remap.end() ? fcall._lazy_closure[zerop_iter->second].eval()
+                                                               : m.zero_points[i]);
     }
-    fcall._closure = std::move(new_closure);
     fcall._scales = std::move(new_scales);
     fcall._zerops = std::move(new_zerops);
+    fcall._closure = std::move(new_closure);
+    fcall._lazy_closure = std::move(new_lazy_closure);
 }
 
 void finalize_remap(Function& fbody, Subgraph& fsg, const ClosureRemap& m) {
