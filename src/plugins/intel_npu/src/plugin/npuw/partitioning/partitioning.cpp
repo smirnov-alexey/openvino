@@ -4,6 +4,8 @@
 
 #include "partitioning.hpp"
 
+#include <memory>
+
 #include "../logging.hpp"
 #include "../util.hpp"
 #include "intel_npu/al/config/npuw.hpp"
@@ -19,6 +21,26 @@
 #include "openvino/util/xml_parse_utils.hpp"
 #include "patterns/dcoff.hpp"
 #include "patterns/opt.hpp"
+
+namespace ov {
+namespace npuw {
+inline bool operator==(const std::reference_wrapper<Subgraph>& lhs, const std::reference_wrapper<Subgraph>& rhs) {
+    ov::npuw::Subgraph& llink = lhs.get();
+    ov::npuw::Subgraph& rlink = rhs.get();
+    return &llink == &rlink;
+}
+}  // namespace npuw
+}  // namespace ov
+
+template <typename T2>
+struct std::hash<std::pair<ov::npuw::Subgraph::Ref, T2>> {
+    std::size_t operator()(std::pair<ov::npuw::Subgraph::Ref, T2> const& p) const noexcept {
+        ov::npuw::Subgraph& sg = p.first.get();
+        std::size_t h1 = std::hash<void*>{}(&sg);
+        std::size_t h2 = std::hash<T2>{}(p.second);
+        return h1 ^ (h2 << 1);
+    }
+};
 
 namespace {
 
@@ -161,6 +183,8 @@ private:
 
     using PPtr = std::shared_ptr<ov::op::v0::Parameter>;
     using RPtr = std::shared_ptr<ov::op::v0::Result>;
+    using SubgParam = std::pair<ov::npuw::Subgraph::Ref, PPtr>;
+    using SubgResult = std::pair<ov::npuw::Subgraph::Ref, RPtr>;
     using LinkPtrTo = std::pair<size_t /*submodel_idx*/
                                 ,
                                 PPtr /*param ptr*/
@@ -182,8 +206,8 @@ private:
 
         // Map every function call instance' Parameter and result
         // back to its prototype Parameter and Result
-        std::unordered_map<PPtr, PPtr> param_call_to_proto;
-        std::unordered_map<RPtr, RPtr> result_call_to_proto;
+        std::unordered_map<SubgParam, PPtr> param_call_to_proto;
+        std::unordered_map<SubgResult, RPtr> result_call_to_proto;
     };
     std::map<std::string, FunctionPipeline> all_functions;
 
@@ -203,7 +227,10 @@ private:
     void createFunction(FunctionPipeline& func_ggg);
 
     template <typename T, typename M>
-    void rearrange_to_function_protocol(const std::vector<T>& protocol, std::vector<T>& call, const M& call_to_proto) {
+    void rearrange_to_function_protocol(ov::npuw::Subgraph::Ref func_ref,
+                                        const std::vector<T>& protocol,
+                                        std::vector<T>& call,
+                                        const M& call_to_proto) {
         LOG_DEBUG("Rearranging...");
         LOG_BLOCK();
         LOG_DEBUG("Protocol: " << protocol.size());
@@ -215,7 +242,7 @@ private:
         LOG_DEBUG("Call: " << call.size());
         for (auto&& c : call) {
             LOG_BLOCK();
-            auto p_c = call_to_proto.at(c);
+            auto p_c = call_to_proto.at(typename M::key_type(func_ref, c));
             to_proto.push_back(p_c);
             LOG_DEBUG(c << " (which is " << p_c << ")");
         }
@@ -249,12 +276,12 @@ public:
     Partitioner(const std::shared_ptr<ov::Model>& _model,
                 ov::npuw::Ensemble& _ens,
                 ov::npuw::Partitioning& _P,
-                ::intel_npu::Config& cfg)
+                ::intel_npu::Config& _cfg)
         : model(_model),
           ens(_ens),
           P(_P),
           func_pipeline_type(FunctionPipelineType::FOLD),
-          cfg(cfg) {}
+          cfg(_cfg) {}
 
     ////////////////////////////////////////////////////////
     // Partitioning execution pipeline
@@ -328,6 +355,7 @@ void Partitioner::identifySubgraphs() {
             group_nodes.insert(it->second);
         }
         group.sg._repeated_id = group.repeated_id;
+        group.sg._forced_to_fcall = group.forced_to_fcall;
         group.sg._gflops = group.gflops;
         group.sg._ops = group.all_layers.size();
         P.total_ops += group.sg._ops;
@@ -547,7 +575,7 @@ void Partitioner::identifySubgraphs() {
             LOG_VERB("Processing group's output layer " << output_layer_name);
             LOG_BLOCK();
             auto output_layer_ptr = node_id_cache.at(output_layer_name);
-            if (output_layer_ptr->inputs().empty()) {
+            if (output_layer_ptr->outputs().empty()) {
                 OPENVINO_THROW("The group's output layer ",
                                output_layer_name,
                                " has NO OUTPUTS!! - Graph contracts are broken??");
@@ -1338,9 +1366,12 @@ void Partitioner::matchParameters(const std::string& func_name) {
 
     // Now walk other submodels and match parameters with the same key
     // (yes, including the first one)
-    for (auto&& call : model_group) {
+    for (std::size_t call_id = 0; call_id < model_group.size(); ++call_id) {
         LOG_DEBUG("Handle function call...");
         LOG_BLOCK();
+        auto call = model_group[call_id];
+        auto subg_ref = func.refs[call_id];
+
         std::unordered_set<ov::Node*> this_model_nodes;
         for (auto&& node_ptr : call->get_ordered_ops()) {
             this_model_nodes.insert(node_ptr.get());
@@ -1359,7 +1390,7 @@ void Partitioner::matchParameters(const std::string& func_name) {
                 LOG_DEBUG("Find orig parameter for " << node);
                 auto& orig_param = proto_parameters.at(pkey);
                 auto this_param = std::dynamic_pointer_cast<PPtr::element_type>(node);
-                func.param_call_to_proto[this_param] = orig_param;
+                func.param_call_to_proto[SubgParam(subg_ref, this_param)] = orig_param;
             }
         }
     }
@@ -1397,14 +1428,16 @@ void Partitioner::matchResults(const std::string& func_name) {
 
     // Now walk all submodels and match parameters with the same key
     // (yes, including the first one)
-    for (auto&& call : model_group) {
+    for (std::size_t call_idx = 0; call_idx < model_group.size(); ++call_idx) {
+        auto call = model_group[call_idx];
+        auto subg_ref = func.refs[call_idx];
         for (auto&& node : call->get_ordered_ops()) {
             if (ov::op::util::is_output(node)) {
                 auto&& port = node->input(0).get_source_output();
                 RKey rkey = {layer_to_prototype.at(port.get_node()->get_friendly_name()), port.get_index()};
                 auto& orig_result = proto_results.at(rkey);
                 auto this_result = std::dynamic_pointer_cast<RPtr::element_type>(node);
-                func.result_call_to_proto[this_result] = orig_result;
+                func.result_call_to_proto[SubgResult(subg_ref, this_result)] = orig_result;
             }
         }
     }
@@ -1412,6 +1445,8 @@ void Partitioner::matchResults(const std::string& func_name) {
 }
 
 void Partitioner::createFunction(FunctionPipeline& func_ggg) {
+    using namespace ov::npuw::weights;
+
     ov::npuw::Subgraph& body_sg = func_ggg.refs.front();
     const std::string func_name = body_sg._repeated_id;
 
@@ -1429,6 +1464,7 @@ void Partitioner::createFunction(FunctionPipeline& func_ggg) {
     funcall._gflops = body_sg._gflops;  // preserving this is required for proper stats
     funcall._ops = body_sg._ops;        // preserving this is requried for proper stats
     funcall._avoid_list = body_sg._avoid_list;
+    funcall._forced_to_fcall = body_sg._forced_to_fcall;
 
     // Declare a new function AND record a function call
     ov::npuw::Function function;
@@ -1466,7 +1502,9 @@ void Partitioner::createFunction(FunctionPipeline& func_ggg) {
                 new_param_idx++;
 
                 LOG_DEBUG("Register " << prod_output << " in the function closure");
-                funcall._closure.push_back(ov::npuw::util::tensor_from_const(input_node));  // (n)/1/i/c
+                funcall._lazy_closure.push_back(
+                    LazyTensor(TransformType::THIS,
+                               std::static_pointer_cast<ov::op::v0::Constant>(input_node)));  // (n)/1/i/c
             } else if (ov::op::util::is_parameter(input_node)) {
                 LOG_DEBUG("Handling a Parameter input " << prod_output);
                 LOG_BLOCK();
@@ -1486,6 +1524,7 @@ void Partitioner::createFunction(FunctionPipeline& func_ggg) {
             }  // if(Const|Parameter)
         }      // for(inputs)
     }          // for(nodes)
+    funcall._closure.resize(funcall._lazy_closure.size());
     function._num_params_total = new_param_idx;
     function._model->validate_nodes_and_infer_types();
     P.functions.insert({func_name, std::move(function)});
@@ -1500,6 +1539,8 @@ void Partitioner::createFunction(const std::string& func_name) {
 }
 
 void Partitioner::matchRepeatedSubgraphs(const std::string& func_name) {
+    using namespace ov::npuw::weights;
+
     LOG_VERB("Process function " << func_name << " in model " << model->get_friendly_name() << "...");
     LOG_BLOCK();
 
@@ -1528,8 +1569,9 @@ void Partitioner::matchRepeatedSubgraphs(const std::string& func_name) {
         funcall._gflops = this_sg._gflops;          // duplicated code again!
         funcall._ops = this_sg._ops;                // duplicated code again!
         funcall._avoid_list = this_sg._avoid_list;  // duplicated code again!
-        rearrange_to_function_protocol(body_params, funcall._parameters, func_ggg.param_call_to_proto);
-        rearrange_to_function_protocol(body_results, funcall._results, func_ggg.result_call_to_proto);
+        funcall._forced_to_fcall = this_sg._forced_to_fcall;
+        rearrange_to_function_protocol(this_sg, body_params, funcall._parameters, func_ggg.param_call_to_proto);
+        rearrange_to_function_protocol(this_sg, body_results, funcall._results, func_ggg.result_call_to_proto);
 
         auto func_iter = P.functions.find(func_name);
         NPUW_ASSERT(func_iter != P.functions.end());
@@ -1539,6 +1581,7 @@ void Partitioner::matchRepeatedSubgraphs(const std::string& func_name) {
         LOG_BLOCK();
         const auto& function = func_iter->second;
         funcall._closure.resize(function._num_params_total - function._param_offset);
+        funcall._lazy_closure.resize(function._num_params_total - function._param_offset);
 
         auto tmp_model = *mod_iter;
         for (auto&& node_ptr : tmp_model->get_ordered_ops()) {
@@ -1559,8 +1602,9 @@ void Partitioner::matchRepeatedSubgraphs(const std::string& func_name) {
                         std::make_pair(proto_layer_name, input_desc.get_index()));  // (t)/1/b
                     LOG_DEBUG("Register " << prod_output << " in the function closure[" << param_idx
                                           << "] (via prototype " << proto_layer_name << ")");
-                    funcall._closure[param_idx - function._param_offset] =
-                        ov::npuw::util::tensor_from_const(input_node);  // (t)/1/c
+                    funcall._lazy_closure[param_idx - function._param_offset] =
+                        LazyTensor(TransformType::THIS,
+                                   std::static_pointer_cast<ov::op::v0::Constant>(input_node));  // (t)/1/c
                 }
             }  // for (inputs)
         }      // for(nodes)
@@ -1574,6 +1618,8 @@ void Partitioner::matchRepeatedSubgraphs(const std::string& func_name) {
 }
 
 void Partitioner::optimize(const std::string& func_name) {
+    using namespace ov::npuw::weights;
+
     ov::npuw::Function& f = P.functions.at(func_name);
     auto& func_group = all_functions.at(func_name);
 
@@ -1583,7 +1629,7 @@ void Partitioner::optimize(const std::string& func_name) {
             auto closure_idx = param_idx - f._param_offset;
             ov::parallel_for(func_group.refs.size(), [&](std::size_t f_idx) {
                 auto& funcall = func_group.refs[f_idx].get();
-                ov::npuw::util::permute(funcall._closure[closure_idx], p.second);
+                funcall._lazy_closure[closure_idx].update(TransformType::PERMUTE, p.second);
             });
         }
     };
@@ -1593,7 +1639,7 @@ void Partitioner::optimize(const std::string& func_name) {
             auto closure_idx = param_idx - f._param_offset;
             ov::parallel_for(func_group.refs.size(), [&](std::size_t f_idx) {
                 auto& funcall = func_group.refs[f_idx].get();
-                ov::npuw::util::to_f16(funcall._closure[closure_idx]);
+                funcall._lazy_closure[closure_idx].update(TransformType::CONVERT, std::monostate{});
             });
         }
     };
@@ -1644,11 +1690,21 @@ void Partitioner::optimize(const std::string& func_name) {
             }
             ov::parallel_for(func_group.refs.size(), [&](std::size_t f_idx) {
                 auto& funcall = func_group.refs[f_idx].get();
-                std::vector<ov::Tensor> to_concat;
+                std::vector<LazyTensor> to_concat;
+                // Fill tensor vector
                 for (auto&& cidx : to_concat_idx) {
-                    to_concat.push_back(funcall._closure[cidx]);
+                    // FIXME: Assuming here concat goes first and other transformations later.
+                    //        This allows to store ov::Tensor and ignore their potential history of transformations
+                    NPUW_ASSERT(!funcall._lazy_closure[cidx].has_transformations());
+                    to_concat.push_back(funcall._lazy_closure[cidx]);
                 }
-                funcall._closure.push_back(ov::npuw::util::concat(to_concat, axis));
+                // Note: we can ignore updating funcall._lazy_closure[cidx] here since those LazyTensors will be gone
+                // and the new one added into the vector
+                if (!to_concat.empty()) {
+                    funcall._lazy_closure.push_back(LazyTensor(TransformType::CONCAT, std::make_pair(to_concat, axis)));
+                    // Some of the tensors might be in closure - preserve it's 1:1 idx mapping with _lazy_closure
+                    funcall._closure.push_back(ov::Tensor());
+                }
             });
         }
 
@@ -1672,20 +1728,19 @@ void Partitioner::optimize(const std::string& func_name) {
 
             ov::parallel_for(func_group.refs.size(), [&](std::size_t f_idx) {
                 auto& funcall = func_group.refs[f_idx].get();
-                ov::Tensor cw = funcall._closure[w_idx - f._param_offset];
-                ov::Tensor cz = z_idx != -1 ? funcall._closure[z_idx - f._param_offset] : ov::Tensor{};
-                ov::Tensor cs = funcall._closure[s_idx - f._param_offset];
-                ov::Tensor dst(p.first->get_element_type(), p.first->get_shape());
+                // FIXME: assuming no transformations were applied to the tensor - since we are utilizing the original
+                // ov::Tensor below
+                LazyTensor cw = funcall._lazy_closure[w_idx - f._param_offset];
+                LazyTensor cz = z_idx != -1 ? funcall._lazy_closure[z_idx - f._param_offset]
+                                            : LazyTensor(TransformType::THIS, ov::Tensor());
+                LazyTensor cs = funcall._lazy_closure[s_idx - f._param_offset];
 
-                const auto& gti = ov::get_tensor_impl;
-                if (cw && cz && cs) {
-                    ov::npuw::util::unpack(gti(cw), gti(cz), gti(cs), gti(dst));
-                } else if (cw && cs) {
-                    ov::npuw::util::unpack(gti(cw), gti(cs), gti(dst));
-                } else {
-                    NPUW_ASSERT(false && "Unsupported combination");
-                }
-                funcall._closure.push_back(std::move(dst));
+                // FIXME: currently there is an issue that we don't share such tensor between head and tail
+                funcall._lazy_closure.push_back(
+                    LazyTensor(TransformType::UNPACK,
+                               std::make_tuple(cw, cz, cs, p.first->get_shape(), p.first->get_element_type())));
+                // Some of the tensors might be in closure - preserve it's 1:1 idx mapping with _lazy_closure
+                funcall._closure.push_back(ov::Tensor());
             });
         }
 
@@ -1699,25 +1754,31 @@ void Partitioner::optimize(const std::string& func_name) {
             for (auto&& funcall : func_group.refs) {
                 auto new_elem_type = params_to_gather.pnew->get_element_type();
                 auto new_shape = params_to_gather.pnew->get_shape();
+                // Note: no allocation needed for this tensor - set to _closure and dummy in _lazy_closure
                 funcall.get()._closure.push_back(ov::Tensor(new_elem_type, new_shape));
+                funcall.get()._lazy_closure.push_back(LazyTensor(TransformType::THIS, ov::Tensor()));
             }
         }
 
         // Add all new parameters introduced by this change
         f._model->add_parameters(new_params);
 
-        // Remove parameters and closures that were concatenated
-        std::vector<ov::Tensor> new_closure;
+        // Remove LazyTensors which will be concatenated
         for (auto&& fref : func_group.refs) {
             auto& funcall = fref.get();
+            std::vector<LazyTensor> new_transforms;
+            // Some of the tensors might be in closure (e.g. host-gather), thus need to preserve the _closure as well
             std::vector<ov::Tensor> new_closure;
-            for (std::size_t cidx = 0; cidx < funcall._closure.size(); cidx++) {
-                if (to_remove_idx.count(f._param_offset + cidx) == 0) {
-                    new_closure.push_back(funcall._closure[cidx]);
+            for (std::size_t tidx = 0; tidx < funcall._lazy_closure.size(); tidx++) {
+                if (to_remove_idx.count(f._param_offset + tidx) == 0) {
+                    new_transforms.push_back(funcall._lazy_closure[tidx]);
+                    new_closure.push_back(funcall._closure[tidx]);
                 }
             }
+            funcall._lazy_closure = std::move(new_transforms);
             funcall._closure = std::move(new_closure);
         }
+        // Remove parameters that were concatenated
         for (auto&& now_remove : to_remove) {
             f._model->remove_parameter(now_remove);
         }
@@ -1861,7 +1922,7 @@ void Partitioner::decompressionCutOff(const std::string& func_name) {
             }
 
             // Finally, remove the function body's parameters here
-            ov::npuw::patterns::finalize_remap(f, closure_remap);
+            ov::npuw::patterns::finalize_remap(f, func_group.refs.front(), closure_remap);
         }  // if (CAST_SCALE && have(params_to_scale))
     }
     LOG_DEBUG("Function model inputs after the DCOFF:");
@@ -1894,7 +1955,7 @@ void Partitioner::finalizeLinks() {
             auto& params = P.functions.at(sg_desc._funcall)._model->get_parameters();
             auto& proto = func_pipeline_type == FunctionPipelineType::CWAI
                               ? ptr  // no protos in the CWAI case..
-                              : all_functions.at(sg_desc._funcall).param_call_to_proto.at(ptr);
+                              : all_functions.at(sg_desc._funcall).param_call_to_proto.at(SubgParam(sg_desc, ptr));
             auto param_iter = std::find(params.begin(), params.end(), proto);
             NPUW_ASSERT(param_iter != params.end());
             return std::distance(params.begin(), param_iter);
@@ -1915,7 +1976,7 @@ void Partitioner::finalizeLinks() {
             auto& results = P.functions.at(sg_desc._funcall)._model->get_results();
             auto& proto = func_pipeline_type == FunctionPipelineType::CWAI
                               ? ptr  // no protos in the CWAI case...
-                              : all_functions.at(sg_desc._funcall).result_call_to_proto.at(ptr);
+                              : all_functions.at(sg_desc._funcall).result_call_to_proto.at(SubgResult(sg_desc, ptr));
             auto result_iter = std::find(results.begin(), results.end(), proto);
             NPUW_ASSERT(result_iter != results.end());
             return std::distance(results.begin(), result_iter);
@@ -1996,6 +2057,8 @@ ov::npuw::Partitioning ov::npuw::getPartitioning(const std::shared_ptr<ov::Model
                 LOG_INFO("Turning block " << gid << " into a function " << this_group.repeated_id << "...");
                 LOG_BLOCK();
                 this_group.repeated_id = std::move(new_id);
+                this_group.forced_to_fcall = true;
+
                 ov::npuw::RepeatedBlock this_block;
                 for (const auto& layer : this_group.all_layers) {
                     // Note: NOT move(layer)! It breaks the code here.
