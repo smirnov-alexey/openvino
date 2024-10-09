@@ -48,6 +48,14 @@ static constexpr ov::Property<std::string> weights_bank{"NPUW_WEIGHTS_BANK"};
 /**
  * @brief
  * Type: std::string.
+ * Specify a directory where to store cached submodels.
+ * Default value: empty.
+ */
+static constexpr ov::Property<std::string> cache_dir{"NPUW_CACHE_DIR"};
+
+/**
+ * @brief
+ * Type: std::string.
  * Specify device name for weights bank which is used to allocate memory.
  * Default value: "".
  */
