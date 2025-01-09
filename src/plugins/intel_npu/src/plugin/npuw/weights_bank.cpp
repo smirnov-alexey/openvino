@@ -233,7 +233,7 @@ void Bank::read_and_add_tensor(std::istream& stream, int64_t uid, const std::str
         return;
     }
 
-    // Need to allocate on device and copy deserialized tensor to that memory
+    // Need to allocate on device and read deserialized tensor into that memory
     ov::SoPtr<ov::ITensor> remote_tensor;
     ov::Tensor allocated_tensor;
 

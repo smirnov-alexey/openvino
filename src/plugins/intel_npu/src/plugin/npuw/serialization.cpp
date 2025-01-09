@@ -208,11 +208,6 @@ void ov::npuw::s11n::write_weightless(std::ostream& stream,
     }
 }
 
-void ov::npuw::s11n::write_weightless_closure(std::ostream& stream,
-                                              const std::vector<ov::Tensor>& var,
-                                              const std::vector<int64_t>& uids,
-                                              const std::unordered_map<const void*, std::size_t>& const_to_offset) {}
-
 void ov::npuw::s11n::read_weightless(std::istream& stream,
                                      std::vector<ov::Tensor>& var,
                                      std::ifstream& weights_stream) {
@@ -251,7 +246,3 @@ void ov::npuw::s11n::read_weightless(std::istream& stream,
         }
     }
 }
-
-void ov::npuw::s11n::read_weightless_closure(std::istream& stream,
-                                             std::vector<ov::Tensor>& var,
-                                             std::ifstream& weights_stream) {}

@@ -559,7 +559,12 @@ void ov::npuw::CompiledModel::CompiledModelDesc::serialize(
         write(stream, is_remote);
         write_weightless(stream, scales, const_to_offset);
         write_weightless(stream, zerops, const_to_offset);
-        write_weightless_closure(stream, closure, closure_uid, const_to_offset);
+
+        // !!! FIXME !!!
+        // to serialize closures we need:
+        // 1) serialize CPU closures as scales/zerops
+        // 2) rest should be serialized from lazy_tensor
+        // 3) then LT should be evaluated and allocated (use bank for that) during deserialization
     }
 
     LOG_DEBUG("DONE.");
@@ -632,7 +637,12 @@ ov::npuw::CompiledModel::CompiledModelDesc ov::npuw::CompiledModel::CompiledMode
 
         read_weightless(stream, desc.scales, weights_stream);
         read_weightless(stream, desc.zerops, weights_stream);
-        read_weightless_closure(stream, desc.closure, weights_stream);
+
+        // !!! FIXME !!!
+        // to deserialize closures we need:
+        // 1) deserialize CPU closures as scales/zerops
+        // 2) rest should be deserialized via lazy_tensor
+        // 3) then LT should be evaluated and allocated (use bank for that)
     }
 
     LOG_DEBUG("DONE.");
