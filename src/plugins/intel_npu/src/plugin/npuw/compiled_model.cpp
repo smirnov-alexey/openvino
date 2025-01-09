@@ -479,6 +479,9 @@ ov::npuw::CompiledModel::CompiledModel(const std::shared_ptr<ov::Model>& model,
         }
     }
 
+    // Store constants' offset for serialization purposes
+    store_const_offsets(model);
+
     // Finalize memory in closures and weight banks
     finalize_weights_bank();
     detach_memory();
@@ -494,10 +497,12 @@ ov::npuw::CompiledModel::CompiledModel(const std::shared_ptr<ov::Model>& model,
     report_io();
 }
 
-void ov::npuw::CompiledModel::CompiledModelDesc::serialize(std::ostream& stream,
-                                                           const std::size_t& idx,
-                                                           const std::string& device,
-                                                           bool is_weightless, const std::string& weights_path) const {
+void ov::npuw::CompiledModel::CompiledModelDesc::serialize(
+    std::ostream& stream,
+    const std::size_t& idx,
+    const std::string& device,
+    bool is_weightless,
+    const std::unordered_map<const void*, std::size_t>& const_to_offset) const {
     using namespace ov::npuw::s11n;
 
     LOG_DEBUG("Serializing CompiledModelDesc...");
@@ -551,7 +556,10 @@ void ov::npuw::CompiledModel::CompiledModelDesc::serialize(std::ostream& stream,
         }
     } else {
         // Weightless flow
-
+        write(stream, is_remote);
+        write_weightless(stream, scales, const_to_offset);
+        write_weightless(stream, zerops, const_to_offset);
+        write_weightless_closure(stream, closure, closure_uid, const_to_offset);
     }
 
     LOG_DEBUG("DONE.");
@@ -562,7 +570,8 @@ ov::npuw::CompiledModel::CompiledModelDesc ov::npuw::CompiledModel::CompiledMode
     const std::size_t idx,
     const std::shared_ptr<const ov::IPlugin>& plugin,
     const ov::AnyMap& properties,
-    bool is_weightless, const std::string& weights_path) {
+    bool is_weightless,
+    const std::string& weights_path) {
     using namespace ov::npuw::s11n;
 
     LOG_DEBUG("Deserializing CompiledModelDesc...");
@@ -617,7 +626,13 @@ ov::npuw::CompiledModel::CompiledModelDesc ov::npuw::CompiledModel::CompiledMode
         }
     } else {
         // Weightless flow
+        read(stream, desc.is_remote);
 
+        std::ifstream weights_stream(weights_path, std::ios::in | std::ios::binary);
+
+        read_weightless(stream, desc.scales, weights_stream);
+        read_weightless(stream, desc.zerops, weights_stream);
+        read_weightless_closure(stream, desc.closure, weights_stream);
     }
 
     LOG_DEBUG("DONE.");
@@ -625,7 +640,7 @@ ov::npuw::CompiledModel::CompiledModelDesc ov::npuw::CompiledModel::CompiledMode
     return desc;
 }
 
-void ov::npuw::CompiledModel::serialize(std::ostream& stream, bool is_weightless, const std::string& weights_path) const {
+void ov::npuw::CompiledModel::serialize(std::ostream& stream, bool is_weightless) const {
     LOG_INFO("Serializing CompiledModel...");
     LOG_BLOCK();
 
@@ -667,7 +682,7 @@ void ov::npuw::CompiledModel::serialize(std::ostream& stream, bool is_weightless
     write(stream, m_compiled_submodels.size());
     std::size_t idx = 0;
     for (const auto& subm : m_compiled_submodels) {
-        subm.serialize(stream, idx++, *device_list.begin(), is_weightless, weights_path);
+        subm.serialize(stream, idx++, *device_list.begin(), is_weightless, m_const_to_offset);
     }
 
     LOG_INFO("Done.");
@@ -677,7 +692,8 @@ std::shared_ptr<ov::npuw::CompiledModel> ov::npuw::CompiledModel::deserialize(
     std::istream& stream,
     const std::shared_ptr<const ov::IPlugin>& plugin,
     const ov::AnyMap& properties,
-    bool is_weightless, const std::string& weights_path) {
+    bool is_weightless,
+    const std::string& weights_path) {
     LOG_INFO("Deserializing CompiledModel...");
     LOG_BLOCK();
 
@@ -817,6 +833,29 @@ void ov::npuw::CompiledModel::reconstruct_closure() {
             NPUW_ASSERT(comp_model_desc.closure_uid[cidx] != -1);
             comp_model_desc.closure[cidx] =
                 m_weights_bank->get(comp_model_desc.closure_uid[cidx], *func_desc.device_it);
+        }
+    }
+}
+
+void ov::npuw::CompiledModel::store_const_offsets(const std::shared_ptr<ov::Model>& model) {
+    for (auto&& node_ptr : model->get_ordered_ops()) {
+        if (ov::op::util::is_constant(node_ptr)) {
+            const auto& c = std::static_pointer_cast<ov::op::v0::Constant>(node_ptr);
+            const auto& rt_info = c->get_rt_info();
+            auto data_ptr = c->get_data_ptr();
+            auto offset_iter = rt_info.find("offset");
+            if (offset_iter == rt_info.end()) {
+                continue;
+            }
+            std::size_t offset = offset_iter->second.as<std::size_t>();
+            auto map_iter = m_const_to_offset.find(data_ptr);
+            if (map_iter != m_const_to_offset.end()) {
+                // Already there - check that offset is the same
+                NPUW_ASSERT(map_iter->second == offset &&
+                            "Model contains two constants with same pointer and different offset!");
+            } else {
+                m_const_to_offset[data_ptr] = offset;
+            }
         }
     }
 }

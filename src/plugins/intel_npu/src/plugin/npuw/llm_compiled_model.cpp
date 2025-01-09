@@ -570,8 +570,8 @@ void ov::npuw::LLMCompiledModel::export_model(std::ostream& stream) const {
     write(stream, weights_path);
 
     // Serialize CompiledModels
-    m_kvcache_compiled->serialize(stream, is_weightless, weights_path);
-    m_prefill_compiled->serialize(stream, is_weightless, weights_path);
+    m_kvcache_compiled->serialize(stream, is_weightless);
+    m_prefill_compiled->serialize(stream, is_weightless);
 
     // Serialize configs
     write(stream, m_kvcache_compiled->m_cfg);
@@ -581,7 +581,8 @@ void ov::npuw::LLMCompiledModel::export_model(std::ostream& stream) const {
         // Serialize weights bank
         const auto& kv_bank = m_kvcache_compiled->m_weights_bank;
         const auto& p_bank = m_prefill_compiled->m_weights_bank;
-        NPUW_ASSERT(kv_bank && p_bank && kv_bank == p_bank && "Prefill and KVCache models' weight bank should be shared!");
+        NPUW_ASSERT(kv_bank && p_bank && kv_bank == p_bank &&
+                    "Prefill and KVCache models' weight bank should be shared!");
         write(stream, kv_bank->get_name());
         kv_bank->serialize(stream);
     }
@@ -646,8 +647,10 @@ std::shared_ptr<ov::npuw::LLMCompiledModel> ov::npuw::LLMCompiledModel::deserial
     std::map<std::string, ov::Any> npuw_llm_props;
     std::map<std::string, ov::Any> other_props;
     split_llm_properties(properties, npuw_llm_props, other_props);
-    compiled->m_kvcache_compiled = ov::npuw::CompiledModel::deserialize(stream, plugin, other_props, is_weightless, weights_path);
-    compiled->m_prefill_compiled = ov::npuw::CompiledModel::deserialize(stream, plugin, other_props, is_weightless, weights_path);
+    compiled->m_kvcache_compiled =
+        ov::npuw::CompiledModel::deserialize(stream, plugin, other_props, is_weightless, weights_path);
+    compiled->m_prefill_compiled =
+        ov::npuw::CompiledModel::deserialize(stream, plugin, other_props, is_weightless, weights_path);
 
     // Deserialize configs
     read(stream, compiled->m_kvcache_compiled->m_cfg);

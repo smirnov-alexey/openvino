@@ -67,10 +67,12 @@ private:
 
     void report_io() const;
 
-    void serialize(std::ostream& stream, bool is_weightless, const std::string& weights_path) const;
+    void serialize(std::ostream& stream, bool is_weightless) const;
     static std::shared_ptr<CompiledModel> deserialize(std::istream& stream,
                                                       const std::shared_ptr<const ov::IPlugin>& plugin,
-                                                      const ov::AnyMap& properties, bool is_weightless, const std::string& weights_path);
+                                                      const ov::AnyMap& properties,
+                                                      bool is_weightless,
+                                                      const std::string& weights_path);
 
     // This is used for removing too long output tensor names to fix some compilation issues
     // NB: These two methods has nothing to do with this particular class and should be
@@ -91,6 +93,8 @@ private:
 
     // For full deserialization flow with weights
     void reconstruct_closure();
+    // For weightless serialization flow
+    void store_const_offsets(const std::shared_ptr<ov::Model>& model);
 
     void finalize_weights_bank();
     void detach_memory();
@@ -164,12 +168,17 @@ private:
         // Metrics
         execution_stats stat;
 
-        void serialize(std::ostream& stream, const std::size_t& idx, const std::string& device, bool is_weightless, const std::string& weights_path) const;
+        void serialize(std::ostream& stream,
+                       const std::size_t& idx,
+                       const std::string& device,
+                       bool is_weightless,
+                       const std::unordered_map<const void*, std::size_t>& const_to_offset) const;
         static CompiledModelDesc deserialize(std::istream& stream,
                                              const std::size_t idx,
                                              const std::shared_ptr<const ov::IPlugin>& plugin,
                                              const ov::AnyMap& properties,
-                                             bool is_weightless, const std::string& weights_path);
+                                             bool is_weightless,
+                                             const std::string& weights_path);
     };
     std::vector<CompiledModelDesc> m_compiled_submodels;
 
@@ -179,6 +188,8 @@ private:
     execution_stats m_total_stat;
 
     std::shared_ptr<weights::Bank> m_weights_bank = nullptr;
+
+    std::unordered_map<const void*, std::size_t> m_const_to_offset;
 };
 }  // namespace npuw
 }  // namespace ov
