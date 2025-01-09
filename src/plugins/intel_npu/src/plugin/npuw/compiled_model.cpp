@@ -496,7 +496,8 @@ ov::npuw::CompiledModel::CompiledModel(const std::shared_ptr<ov::Model>& model,
 
 void ov::npuw::CompiledModel::CompiledModelDesc::serialize(std::ostream& stream,
                                                            const std::size_t& idx,
-                                                           const std::string& device) const {
+                                                           const std::string& device,
+                                                           bool is_weightless, const std::string& weights_path) const {
     using namespace ov::npuw::s11n;
 
     LOG_DEBUG("Serializing CompiledModelDesc...");
@@ -523,32 +524,35 @@ void ov::npuw::CompiledModel::CompiledModelDesc::serialize(std::ostream& stream,
 
     write(stream, spatial);
 
-    write(stream, scales);
-    write(stream, zerops);
-    write(stream, is_remote);
+    if (!is_weightless) {
+        // Full flow
+        write(stream, scales);
+        write(stream, zerops);
+        write(stream, is_remote);
 
-    // NOTE: for closure only serialize uids - full flow
-    write(stream, closure_uid);
+        // NOTE: for closure only serialize uids - full flow
+        write(stream, closure_uid);
 
-    // Some tensors might be present in CPU closure already - need to serialize as is
-    // FIXME: When weightless serialization is introduced, this should be handled differently
-    write(stream, closure.size());
-    std::vector<ov::Tensor> cpu_closures;
-    std::vector<std::size_t> cpu_closure_ids;
-    for (std::size_t cidx = 0; cidx < closure.size(); ++cidx) {
-        if (closure_uid[cidx] == -1) {  // CPU closure, not in the bank
-            cpu_closure_ids.push_back(cidx);
-            cpu_closures.push_back(closure[cidx]);
+        // Some tensors might be present in CPU closure already - need to serialize as is
+        write(stream, closure.size());
+        std::vector<ov::Tensor> cpu_closures;
+        std::vector<std::size_t> cpu_closure_ids;
+        for (std::size_t cidx = 0; cidx < closure.size(); ++cidx) {
+            if (closure_uid[cidx] == -1) {  // CPU closure, not in the bank
+                cpu_closure_ids.push_back(cidx);
+                cpu_closures.push_back(closure[cidx]);
+            }
         }
+
+        write(stream, cpu_closure_ids);
+
+        for (const auto& tensor : cpu_closures) {
+            write(stream, tensor);
+        }
+    } else {
+        // Weightless flow
+
     }
-
-    write(stream, cpu_closure_ids);
-
-    for (const auto& tensor : cpu_closures) {
-        write(stream, tensor);
-    }
-
-    // FIXME: support weightless flow!
 
     LOG_DEBUG("DONE.");
 }
@@ -557,7 +561,8 @@ ov::npuw::CompiledModel::CompiledModelDesc ov::npuw::CompiledModel::CompiledMode
     std::istream& stream,
     const std::size_t idx,
     const std::shared_ptr<const ov::IPlugin>& plugin,
-    const ov::AnyMap& properties) {
+    const ov::AnyMap& properties,
+    bool is_weightless, const std::string& weights_path) {
     using namespace ov::npuw::s11n;
 
     LOG_DEBUG("Deserializing CompiledModelDesc...");
@@ -592,32 +597,35 @@ ov::npuw::CompiledModel::CompiledModelDesc ov::npuw::CompiledModel::CompiledMode
 
     read(stream, desc.spatial);
 
-    read(stream, desc.scales);
-    read(stream, desc.zerops);
-    read(stream, desc.is_remote);
+    if (!is_weightless) {
+        // Full flow
+        read(stream, desc.scales);
+        read(stream, desc.zerops);
+        read(stream, desc.is_remote);
 
-    // NOTE: for closure only deserialize uids - full flow
-    read(stream, desc.closure_uid);
+        // NOTE: for closure only deserialize uids - full flow
+        read(stream, desc.closure_uid);
 
-    // Some tensors might be present in CPU closure already - need to deserialize as is
-    // FIXME: When weightless serialization is introduced, this should be handled differently
-    std::size_t closure_size = 0;
-    read(stream, closure_size);
-    std::vector<std::size_t> cpu_closure_ids;
-    read(stream, cpu_closure_ids);
-    desc.closure.resize(closure_size);
-    for (const auto& cidx : cpu_closure_ids) {
-        read(stream, desc.closure[cidx]);
+        // Some tensors might be present in CPU closure already - need to deserialize as is
+        std::size_t closure_size = 0;
+        read(stream, closure_size);
+        std::vector<std::size_t> cpu_closure_ids;
+        read(stream, cpu_closure_ids);
+        desc.closure.resize(closure_size);
+        for (const auto& cidx : cpu_closure_ids) {
+            read(stream, desc.closure[cidx]);
+        }
+    } else {
+        // Weightless flow
+
     }
-
-    // FIXME: support weightless flow!
 
     LOG_DEBUG("DONE.");
 
     return desc;
 }
 
-void ov::npuw::CompiledModel::serialize(std::ostream& stream) const {
+void ov::npuw::CompiledModel::serialize(std::ostream& stream, bool is_weightless, const std::string& weights_path) const {
     LOG_INFO("Serializing CompiledModel...");
     LOG_BLOCK();
 
@@ -659,7 +667,7 @@ void ov::npuw::CompiledModel::serialize(std::ostream& stream) const {
     write(stream, m_compiled_submodels.size());
     std::size_t idx = 0;
     for (const auto& subm : m_compiled_submodels) {
-        subm.serialize(stream, idx++, *device_list.begin());
+        subm.serialize(stream, idx++, *device_list.begin(), is_weightless, weights_path);
     }
 
     LOG_INFO("Done.");
@@ -668,7 +676,8 @@ void ov::npuw::CompiledModel::serialize(std::ostream& stream) const {
 std::shared_ptr<ov::npuw::CompiledModel> ov::npuw::CompiledModel::deserialize(
     std::istream& stream,
     const std::shared_ptr<const ov::IPlugin>& plugin,
-    const ov::AnyMap& properties) {
+    const ov::AnyMap& properties,
+    bool is_weightless, const std::string& weights_path) {
     LOG_INFO("Deserializing CompiledModel...");
     LOG_BLOCK();
 
@@ -717,7 +726,7 @@ std::shared_ptr<ov::npuw::CompiledModel> ov::npuw::CompiledModel::deserialize(
     read(stream, subm_size);
     compiled->m_compiled_submodels.reserve(subm_size);
     for (std::size_t i = 0; i < subm_size; ++i) {
-        auto desc = CompiledModelDesc::deserialize(stream, i, plugin, non_npuw_props);
+        auto desc = CompiledModelDesc::deserialize(stream, i, plugin, non_npuw_props, is_weightless, weights_path);
         desc.device_it = compiled->m_dev_list.cbegin();
         compiled->m_compiled_submodels.push_back(desc);
     }
