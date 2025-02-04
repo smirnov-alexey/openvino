@@ -104,6 +104,8 @@ void Bank::evaluate_and_allocate(std::optional<std::string> weights_path) {
         }
         storage_guard.unlock();
 
+        std::set<int64_t> uids_to_allocate;
+
         ov::parallel_for(vec.size(), [&](std::size_t idx) {
             const auto& lt = vec[idx];
             std::unique_lock dev_guard(device_bank.mutex);
@@ -128,7 +130,13 @@ void Bank::evaluate_and_allocate(std::optional<std::string> weights_path) {
                 return;
             }
 
-            // FIXME: ideally we would want to allocate memory sequentially - in order of UID
+            // Need to allocate
+            uids_to_allocate.insert(device_bank.registered_tensors.at(lt));
+        });
+
+        // Allocate memory sequentially - in order of UID
+        for (const auto& uid : uids_to_allocate) {
+            const auto& transformed_tensor = device_bank.storage[uid].tensor;
             ov::SoPtr<ov::ITensor> remote_tensor;
             ov::Tensor allocated_tensor;
 
@@ -136,16 +144,15 @@ void Bank::evaluate_and_allocate(std::optional<std::string> weights_path) {
             remote_tensor =
                 remote_ctx->create_host_tensor(transformed_tensor.get_element_type(), transformed_tensor.get_shape());
             allocated_tensor = ov::make_tensor(remote_tensor);
-            device_bank.storage[device_bank.registered_tensors.at(lt)].tensor = allocated_tensor;
-            guard.unlock();  // Unlock the guard, map update is done - copy can continue in parallel
+            device_bank.storage.at(uid).tensor = allocated_tensor;
 
             transformed_tensor.copy_to(allocated_tensor);
 
             // Detach the evaluated LazyTensor from its memory here - when it is 100%
             // not needed anymore (transformations, if any, and copies are done)
             // Note: this is the non-CPU path!
-            const_cast<LazyTensor&>(lt).detach();
-        });
+            const_cast<LazyTensor&>(device_bank.storage.at(uid).lt).detach();
+        }
     }
 }
 
@@ -180,9 +187,16 @@ void Bank::serialize(std::ostream& stream) const {
         std::lock_guard<std::mutex> dev_guard(device_bank.mutex);
         write(stream, device);
         write(stream, device_bank.storage.size());
+
+        // Write tensors sequentially according to sorted uids for better memory allocation and utilization
+        std::set<int64_t> uids;
         for (const auto& t_pair : device_bank.storage) {
-            write(stream, t_pair.first);
-            write(stream, t_pair.second.tensor);
+            uids.insert(t_pair.first);
+        }
+
+        for (const auto& uid : uids) {
+            write(stream, uid);
+            write(stream, device_bank.storage.at(uid).tensor);
         }
     }
 
