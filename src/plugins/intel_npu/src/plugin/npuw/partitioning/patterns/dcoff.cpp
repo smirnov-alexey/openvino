@@ -100,7 +100,10 @@ ClosureRemap build_remap(const Function& fbody, const DCOFFParams& params_to) {
             // FIXME: type should be queried from a lazy tensor
             // and compared against param->get_element_type()
             // to decide 100%
-            m.weights_to_unpack.insert(i - fbody._param_offset);
+            // FIXME: workaround, in case of lazy unpack do not do unpack here
+            if (fbody._idx_lazy_unpack.find(i - fbody._param_offset) == fbody._idx_lazy_unpack.end()) {
+                m.weights_to_unpack.insert(i - fbody._param_offset);
+            }
         }
 
         // Process zero points for parameters
