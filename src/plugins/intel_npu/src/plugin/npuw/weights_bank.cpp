@@ -93,7 +93,7 @@ void Bank::evaluate_and_allocate() {
         }
         storage_guard.unlock();
 
-        std::set<int64_t> uids_to_allocate;
+        std::map<int64_t, ov::Tensor> uids_to_allocated;
 
         ov::parallel_for(vec.size(), [&](std::size_t idx) {
             const auto& lt = vec[idx];
@@ -120,11 +120,13 @@ void Bank::evaluate_and_allocate() {
             }
 
             // Need to allocate
-            uids_to_allocate.insert(device_bank.registered_tensors.at(lt));
+            // Note: secured by the lock above
+            uids_to_allocated.insert({device_bank.registered_tensors.at(lt), ov::Tensor()});
         });
 
         // Allocate memory sequentially - in order of UID
-        for (const auto& uid : uids_to_allocate) {
+        for (const auto& elem : uids_to_allocated) {
+            auto uid = elem.first;
             const auto& transformed_tensor = device_bank.storage[uid].tensor;
             ov::SoPtr<ov::ITensor> remote_tensor;
             ov::Tensor allocated_tensor;
@@ -132,16 +134,23 @@ void Bank::evaluate_and_allocate() {
             auto remote_ctx = m_core->get_default_context(device_for_alloc)._ptr;
             remote_tensor =
                 remote_ctx->create_host_tensor(transformed_tensor.get_element_type(), transformed_tensor.get_shape());
-            allocated_tensor = ov::make_tensor(remote_tensor);
-            device_bank.storage.at(uid).tensor = allocated_tensor;
+            uids_to_allocated.at(uid) = ov::make_tensor(remote_tensor);
+        }
 
-            transformed_tensor.copy_to(allocated_tensor);
+        ov::parallel_for(uids_to_allocated.size(), [&](std::size_t idx) {
+            auto it = uids_to_allocated.begin();
+            // FIXME: linear complexity
+            std::advance(it, idx);
+            auto uid = it->first;
+            auto allocated_tensor = it->second;
+            device_bank.storage[uid].tensor.copy_to(allocated_tensor);
+            device_bank.storage.at(uid).tensor = std::move(allocated_tensor);
 
             // Detach the evaluated LazyTensor from its memory here - when it is 100%
             // not needed anymore (transformations, if any, and copies are done)
             // Note: this is the non-CPU path!
             const_cast<LazyTensor&>(device_bank.storage.at(uid).lt).detach();
-        }
+        });
     }
 }
 
