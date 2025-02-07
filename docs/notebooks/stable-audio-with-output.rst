@@ -66,13 +66,14 @@ Prerequisites
 
     import platform
     
-    %pip install -q "torch>=2.2" --extra-index-url https://download.pytorch.org/whl/cpu
-    %pip install -q  "stable-audio-tools" "nncf>=2.12.0" --extra-index-url https://download.pytorch.org/whl/cpu
+    %pip install -q "torch>=2.2" "torchaudio" "einops" "einops-exts" "huggingface-hub" "k-diffusion" "pytorch_lightning" "alias-free-torch" "ema-pytorch" "transformers>=4.45" "gradio>=4.19" --extra-index-url https://download.pytorch.org/whl/cpu
+    %pip install -q --no-deps "stable-audio-tools"
+    %pip install  -q "nncf>=2.12.0"
     if platform.system() == "Darwin":
         %pip install -q "numpy>=1.26,<2.0.0" "pandas>2.0.2" "matplotlib>=3.9"
     else:
         %pip install -q "numpy>=1.26" "pandas>2.0.2" "matplotlib>=3.9"
-    %pip install -q  "openvino>=2024.4.0"
+    %pip install -q "openvino>=2024.4.0"
 
 Load the original model and inference
 -------------------------------------
@@ -109,35 +110,24 @@ Load the original model and inference
     from stable_audio_tools import get_pretrained_model
     from stable_audio_tools.inference.generation import generate_diffusion_cond
     
+    import requests
+    from pathlib import Path
+    
+    if not Path("notebook_utils.py").exists():
+        r = requests.get(
+            url="https://raw.githubusercontent.com/openvinotoolkit/openvino_notebooks/latest/utils/notebook_utils.py",
+        )
+        open("notebook_utils.py", "w").write(r.text)
+    
+    # Read more about telemetry collection at https://github.com/openvinotoolkit/openvino_notebooks?tab=readme-ov-file#-telemetry
+    from notebook_utils import collect_telemetry
+    
+    collect_telemetry("stable-audio.ipynb")
+    
     
     # Download model
     model, model_config = get_pretrained_model("stabilityai/stable-audio-open-1.0")
 
-
-
-.. parsed-literal::
-
-    model_config.json:   0%|          | 0.00/4.17k [00:00<?, ?B/s]
-
-
-.. parsed-literal::
-
-    2024-10-29 21:32:11.156823: I tensorflow/core/util/port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
-    2024-10-29 21:32:11.171697: E external/local_xla/xla/stream_executor/cuda/cuda_fft.cc:477] Unable to register cuFFT factory: Attempting to register factory for plugin cuFFT when one has already been registered
-    WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
-    E0000 00:00:1730223131.187567  300904 cuda_dnn.cc:8310] Unable to register cuDNN factory: Attempting to register factory for plugin cuDNN when one has already been registered
-    E0000 00:00:1730223131.192174  300904 cuda_blas.cc:1418] Unable to register cuBLAS factory: Attempting to register factory for plugin cuBLAS when one has already been registered
-    2024-10-29 21:32:11.209352: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
-    To enable the following instructions: AVX2 AVX512F AVX512_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
-    /home/ea/work/py311/lib/python3.11/site-packages/x_transformers/x_transformers.py:435: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
-      @autocast(enabled = False)
-    /home/ea/work/py311/lib/python3.11/site-packages/x_transformers/x_transformers.py:461: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
-      @autocast(enabled = False)
-    /home/ea/work/py311/lib/python3.11/site-packages/stable_audio_tools/models/transformer.py:126: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
-      @autocast(enabled = False)
-    /home/ea/work/py311/lib/python3.11/site-packages/stable_audio_tools/models/transformer.py:151: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
-      @autocast(enabled = False)
-    
 
 .. parsed-literal::
 
@@ -147,19 +137,9 @@ Load the original model and inference
 
 .. parsed-literal::
 
-    /home/ea/work/py311/lib/python3.11/site-packages/vector_quantize_pytorch/vector_quantize_pytorch.py:436: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
-      @autocast(enabled = False)
-    /home/ea/work/py311/lib/python3.11/site-packages/vector_quantize_pytorch/vector_quantize_pytorch.py:619: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
-      @autocast(enabled = False)
-    /home/ea/work/py311/lib/python3.11/site-packages/torch/nn/utils/weight_norm.py:143: FutureWarning: `torch.nn.utils.weight_norm` is deprecated in favor of `torch.nn.utils.parametrizations.weight_norm`.
+    /home/ea/work/openvino_notebooks_new_clone/openvino_notebooks/myenv/lib/python3.11/site-packages/torch/nn/utils/weight_norm.py:143: FutureWarning: `torch.nn.utils.weight_norm` is deprecated in favor of `torch.nn.utils.parametrizations.weight_norm`.
       WeightNorm.apply(module, name, dim)
     
-
-
-.. parsed-literal::
-
-    model.safetensors:   0%|          | 0.00/4.85G [00:00<?, ?B/s]
-
 
 .. code:: ipython3
 
@@ -200,12 +180,10 @@ Load the original model and inference
 
 .. parsed-literal::
 
-    /home/ea/work/py311/lib/python3.11/site-packages/stable_audio_tools/models/conditioners.py:314: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+    /home/ea/work/openvino_notebooks_new_clone/openvino_notebooks/myenv/lib/python3.11/site-packages/stable_audio_tools/models/conditioners.py:353: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
       with torch.cuda.amp.autocast(dtype=torch.float16) and torch.set_grad_enabled(self.enable_grad):
-    /home/ea/work/py311/lib/python3.11/site-packages/torch/amp/autocast_mode.py:266: UserWarning: User provided device_type of 'cuda', but CUDA is not available. Disabling
+    /home/ea/work/openvino_notebooks_new_clone/openvino_notebooks/myenv/lib/python3.11/site-packages/torch/amp/autocast_mode.py:266: UserWarning: User provided device_type of 'cuda', but CUDA is not available. Disabling
       warnings.warn(
-    /home/ea/work/py311/lib/python3.11/site-packages/stable_audio_tools/inference/sampling.py:177: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
-      with torch.cuda.amp.autocast():
     
 
 
@@ -216,9 +194,9 @@ Load the original model and inference
 
 .. parsed-literal::
 
-    /home/ea/work/py311/lib/python3.11/site-packages/torchsde/_brownian/brownian_interval.py:608: UserWarning: Should have tb<=t1 but got tb=500.00006103515625 and t1=500.000061.
+    /home/ea/work/openvino_notebooks_new_clone/openvino_notebooks/myenv/lib/python3.11/site-packages/torchsde/_brownian/brownian_interval.py:608: UserWarning: Should have tb<=t1 but got tb=500.00006103515625 and t1=500.000061.
       warnings.warn(f"Should have {tb_name}<=t1 but got {tb_name}={tb} and t1={self._end}.")
-    /home/ea/work/py311/lib/python3.11/site-packages/torchsde/_brownian/brownian_interval.py:599: UserWarning: Should have ta>=t0 but got ta=0.29999998211860657 and t0=0.3.
+    /home/ea/work/openvino_notebooks_new_clone/openvino_notebooks/myenv/lib/python3.11/site-packages/torchsde/_brownian/brownian_interval.py:599: UserWarning: Should have ta>=t0 but got ta=0.29999998211860657 and t0=0.3.
       warnings.warn(f"Should have ta>=t0 but got ta={ta} and t0={self._start}.")
     
 
@@ -312,7 +290,7 @@ documentation <https://docs.openvino.ai/2024/openvino-workflow/model-optimizatio
 
 .. parsed-literal::
 
-    INFO:nncf:NNCF initialized successfully. Supported frameworks detected: torch, tensorflow, onnx, openvino
+    INFO:nncf:NNCF initialized successfully. Supported frameworks detected: torch, openvino
     
 
 .. code:: ipython3
@@ -344,41 +322,6 @@ T5-based text embedding
     }
     
     convert(model.conditioner.conditioners["prompt"].model, CONDITIONER_ENCODER_PATH, example_input)
-
-
-.. parsed-literal::
-
-    WARNING:nncf:NNCF provides best results with torch==2.4.*, while current torch version is 2.5.1+cpu. If you encounter issues, consider switching to torch==2.4.*
-    
-
-.. parsed-literal::
-
-    /home/ea/work/py311/lib/python3.11/site-packages/transformers/modeling_utils.py:4779: FutureWarning: `_is_quantized_training_enabled` is going to be deprecated in transformers 4.39.0. Please use `model.hf_quantizer.is_trainable` instead
-      warnings.warn(
-    
-
-.. parsed-literal::
-
-    INFO:nncf:Statistics of the bitwidth distribution:
-    ┍━━━━━━━━━━━━━━━━┯━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┯━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┑
-    │   Num bits (N) │ % all parameters (layers)   │ % ratio-defining parameters (layers)   │
-    ┝━━━━━━━━━━━━━━━━┿━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┿━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┥
-    │              8 │ 100% (74 / 74)              │ 100% (74 / 74)                         │
-    ┕━━━━━━━━━━━━━━━━┷━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┷━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┙
-    
-
-
-.. parsed-literal::
-
-    Output()
-
-
-
-
-
-
-    
-
 
 Transformer-based diffusion (DiT) model
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -459,38 +402,6 @@ Transformer-based diffusion (DiT) model
     diffuser.transformer.forward = types.MethodType(continious_transformer_forward, diffuser.transformer)
     convert(DiffusionWrapper(diffuser), DIFFUSION_PATH, example_input)
 
-
-.. parsed-literal::
-
-    /tmp/ipykernel_300904/2053830173.py:16: TracerWarning: Converting a tensor to a Python boolean might cause the trace to be incorrect. We can't record the data flow of Python values, so this value will be treated as a constant in the future. This means that the trace might not generalize to other inputs!
-      assert prepend_dim == x.shape[-1], "prepend dimension must match sequence dimension"
-    /home/ea/work/py311/lib/python3.11/site-packages/stable_audio_tools/models/transformer.py:461: TracerWarning: Converting a tensor to a Python boolean might cause the trace to be incorrect. We can't record the data flow of Python values, so this value will be treated as a constant in the future. This means that the trace might not generalize to other inputs!
-      if n == 1 and causal:
-    
-
-.. parsed-literal::
-
-    INFO:nncf:Statistics of the bitwidth distribution:
-    ┍━━━━━━━━━━━━━━━━┯━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┯━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┑
-    │   Num bits (N) │ % all parameters (layers)   │ % ratio-defining parameters (layers)   │
-    ┝━━━━━━━━━━━━━━━━┿━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┿━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┥
-    │              8 │ 100% (179 / 179)            │ 100% (179 / 179)                       │
-    ┕━━━━━━━━━━━━━━━━┷━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┷━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┙
-    
-
-
-.. parsed-literal::
-
-    Output()
-
-
-
-
-
-
-    
-
-
 Decoder part of autoencoder
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -498,31 +409,22 @@ Decoder part of autoencoder
 
 .. code:: ipython3
 
+    import types
+    
+    
+    def residual_forward(self, x):
+        res = x
+        x = self.layers(x)
+        return x + res
+    
+    
+    for layer in model.pretransform.model.decoder.layers:
+        if layer.__class__.__name__ == "DecoderBlock":
+            for sublayer in layer.layers:
+                if sublayer.__class__.__name__ == "ResidualUnit":
+                    sublayer.forward = types.MethodType(residual_forward, sublayer)
+    
     convert(model.pretransform.model.decoder, PRETRANSFORM_PATH, torch.rand([1, 64, 215], dtype=torch.float32))
-
-
-.. parsed-literal::
-
-    INFO:nncf:Statistics of the bitwidth distribution:
-    ┍━━━━━━━━━━━━━━━━┯━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┯━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┑
-    │   Num bits (N) │ % all parameters (layers)   │ % ratio-defining parameters (layers)   │
-    ┝━━━━━━━━━━━━━━━━┿━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┿━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┥
-    │              8 │ 100% (37 / 37)              │ 100% (37 / 37)                         │
-    ┕━━━━━━━━━━━━━━━━┷━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┷━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┙
-    
-
-
-.. parsed-literal::
-
-    Output()
-
-
-
-
-
-
-    
-
 
 Compiling models and inference
 ------------------------------
@@ -533,13 +435,6 @@ Select device from dropdown list for running inference using OpenVINO.
 
 .. code:: ipython3
 
-    import requests
-    
-    r = requests.get(
-        url="https://raw.githubusercontent.com/openvinotoolkit/openvino_notebooks/latest/utils/notebook_utils.py",
-    )
-    open("notebook_utils.py", "w").write(r.text)
-    
     from notebook_utils import device_widget
     
     device = device_widget("CPU")
@@ -650,29 +545,11 @@ and run inference.
     42
     
 
-.. parsed-literal::
-
-    /home/ea/work/py311/lib/python3.11/site-packages/stable_audio_tools/models/conditioners.py:314: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
-      with torch.cuda.amp.autocast(dtype=torch.float16) and torch.set_grad_enabled(self.enable_grad):
-    /home/ea/work/py311/lib/python3.11/site-packages/torch/amp/autocast_mode.py:266: UserWarning: User provided device_type of 'cuda', but CUDA is not available. Disabling
-      warnings.warn(
-    /home/ea/work/py311/lib/python3.11/site-packages/stable_audio_tools/inference/sampling.py:177: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
-      with torch.cuda.amp.autocast():
-    
-
 
 .. parsed-literal::
 
       0%|          | 0/100 [00:00<?, ?it/s]
 
-
-.. parsed-literal::
-
-    /home/ea/work/py311/lib/python3.11/site-packages/torchsde/_brownian/brownian_interval.py:608: UserWarning: Should have tb<=t1 but got tb=500.00006103515625 and t1=500.000061.
-      warnings.warn(f"Should have {tb_name}<=t1 but got {tb_name}={tb} and t1={self._end}.")
-    /home/ea/work/py311/lib/python3.11/site-packages/torchsde/_brownian/brownian_interval.py:599: UserWarning: Should have ta>=t0 but got ta=0.29999998211860657 and t0=0.3.
-      warnings.warn(f"Should have ta>=t0 but got ta={ta} and t0={self._start}.")
-    
 
 .. code:: ipython3
 

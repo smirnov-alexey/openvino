@@ -12,7 +12,6 @@
 #include "online/compiler.hpp"
 #include "online/utils/utils.hpp"  // getMetaDesc
 #include "openvino/core/parallel.hpp"
-#include "openvino/core/rt_info/weightless_caching_attributes.hpp"
 #include "openvino/op/convert.hpp"
 #include "openvino/op/slice.hpp"
 #include "openvino/op/util/op_types.hpp"
@@ -223,8 +222,6 @@ private:
     // Matches a pair of {func_name, layer_name} to it's counter.
     std::map<std::pair<std::string, std::string>, size_t> dup_scalars;
 
-    void set_const_offset(ov::npuw::weights::LazyTensor& lt, const std::shared_ptr<ov::op::v0::Constant>& const_node);
-
     using Match = std::function<bool(const std::shared_ptr<ov::Node>& node)>;
     void propagate(const std::string& func_name, const Match& test, ov::npuw::RepeatedBlock::MatchedBank& bank);
 
@@ -331,16 +328,6 @@ private:
     FunctionPipelineType func_pipeline_type;
     ::intel_npu::Config& cfg;
 };
-
-void Partitioner::set_const_offset(ov::npuw::weights::LazyTensor& lt,
-                                   const std::shared_ptr<ov::op::v0::Constant>& const_node) {
-    auto rt_info = const_node->get_rt_info();
-    auto weightless_cache_attr = rt_info.find(ov::WeightlessCacheAttribute::get_type_info_static());
-    if (weightless_cache_attr != rt_info.end()) {
-        std::size_t offset = weightless_cache_attr->second.as<ov::WeightlessCacheAttribute>().bin_offset;
-        lt.set_const_offset(offset);
-    }
-}
 
 void Partitioner::identifySubgraphs() {
     LOG_INFO("Identifying subgraphs for model " << model->get_friendly_name() << "...");
@@ -1539,9 +1526,8 @@ void Partitioner::createFunction(FunctionPipeline& func_ggg) {
                 new_param_idx++;
 
                 LOG_DEBUG("Register " << prod_output << " in the function closure");
-                auto const_node = std::static_pointer_cast<ov::op::v0::Constant>(input_node);
-                funcall._lazy_closure.push_back(LazyTensor(const_node));  // (n)/1/i/c
-                set_const_offset(funcall._lazy_closure.back(), const_node);
+                funcall._lazy_closure.push_back(
+                    LazyTensor(std::static_pointer_cast<ov::op::v0::Constant>(input_node)));  // (n)/1/i/c
             } else if (ov::op::util::is_parameter(input_node)) {
                 LOG_DEBUG("Handling a Parameter input " << prod_output);
                 LOG_BLOCK();
@@ -1711,9 +1697,8 @@ void Partitioner::matchRepeatedSubgraphs(const std::string& func_name) {
                         std::make_pair(proto_layer_name, input_desc.get_index()));  // (t)/1/b
                     LOG_DEBUG("Register " << prod_output << " in the function closure[" << param_idx
                                           << "] (via prototype " << proto_layer_name << ")");
-                    auto const_node = std::static_pointer_cast<ov::op::v0::Constant>(input_node);
-                    funcall._lazy_closure[param_idx - function._param_offset] = LazyTensor(const_node);  // (t)/1/c
-                    set_const_offset(funcall._lazy_closure[param_idx - function._param_offset], const_node);
+                    funcall._lazy_closure[param_idx - function._param_offset] =
+                        LazyTensor(std::static_pointer_cast<ov::op::v0::Constant>(input_node));  // (t)/1/c
                 }
             }  // for (inputs)
         }      // for(nodes)
