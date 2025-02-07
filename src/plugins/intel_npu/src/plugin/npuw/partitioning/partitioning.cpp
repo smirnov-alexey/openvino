@@ -1765,20 +1765,20 @@ void Partitioner::optimize(const std::string& func_name) {
         for (auto&& p : ctx.closures_to_permute) {
             auto param_idx = f._model->get_parameter_index(p.first);
             auto closure_idx = param_idx - f._param_offset;
-            for (std::size_t f_idx = 0; f_idx < func_group.refs.size(); ++f_idx) {
+            ov::npuw::util::non_parallel_for(func_group.refs.size(), [&](std::size_t f_idx) {
                 auto& funcall = func_group.refs[f_idx].get();
                 funcall._lazy_closure[closure_idx] = funcall._lazy_closure[closure_idx].permute(p.second);
-            }
+            });
         }
     };
     auto do_cvtf16 = [&](ov::npuw::patterns::opt::Context& ctx) {
         for (auto&& p : ctx.closures_to_f16) {
             auto param_idx = f._model->get_parameter_index(p);
             auto closure_idx = param_idx - f._param_offset;
-            for (std::size_t f_idx = 0; f_idx < func_group.refs.size(); ++f_idx) {
+            ov::npuw::util::non_parallel_for(func_group.refs.size(), [&](std::size_t f_idx) {
                 auto& funcall = func_group.refs[f_idx].get();
                 funcall._lazy_closure[closure_idx] = funcall._lazy_closure[closure_idx].convert(ov::element::f16);
-            }
+            });
         }
     };
 
@@ -1829,7 +1829,7 @@ void Partitioner::optimize(const std::string& func_name) {
                 to_concat_idx.push_back(p_to_concat_idx - f._param_offset);
                 to_remove_idx.insert(p_to_concat_idx);
             }
-            for (std::size_t f_idx = 0; f_idx < func_group.refs.size(); ++f_idx) {
+            ov::npuw::util::non_parallel_for(func_group.refs.size(), [&](std::size_t f_idx) {
                 auto& funcall = func_group.refs[f_idx].get();
                 std::vector<LazyTensor> to_concat;
                 // Fill tensor vector
@@ -1844,7 +1844,7 @@ void Partitioner::optimize(const std::string& func_name) {
                     // Some of the tensors might be in closure - preserve it's 1:1 idx mapping with _lazy_closure
                     funcall._closure.push_back(ov::Tensor());
                 }
-            }
+            });
         }
 
         // Unpack closures in compile time, where requested
@@ -1865,7 +1865,7 @@ void Partitioner::optimize(const std::string& func_name) {
                 to_remove_idx.insert(z_idx);
             }
 
-            for (std::size_t f_idx = 0; f_idx < func_group.refs.size(); ++f_idx) {
+            ov::npuw::util::non_parallel_for(func_group.refs.size(), [&](std::size_t f_idx) {
                 auto& funcall = func_group.refs[f_idx].get();
                 LazyTensor cw = funcall._lazy_closure[w_idx - f._param_offset];
                 LazyTensor cz = z_idx != -1 ? funcall._lazy_closure[z_idx - f._param_offset] : LazyTensor();
@@ -1879,7 +1879,7 @@ void Partitioner::optimize(const std::string& func_name) {
                 // It assigns some closures to be calculated instead of keeping the lazy ones.
                 // Here we remember lazy closure not to be unpacked in compile time in DCOFF.
                 funcall._is_lazy_unpack.push_back(true);
-            }
+            });
         }
 
         // Convert parameters to f16 where required
