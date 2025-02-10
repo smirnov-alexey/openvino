@@ -137,13 +137,20 @@ void Bank::evaluate_and_allocate() {
             uids_to_allocated.at(uid) = ov::make_tensor(remote_tensor);
         }
 
+        // Copy to allocated memory
         ov::parallel_for(uids_to_allocated.size(), [&](std::size_t idx) {
+            std::unique_lock dev_guard(device_bank.mutex);
             auto it = uids_to_allocated.begin();
             // FIXME: linear complexity
             std::advance(it, idx);
             auto uid = it->first;
-            auto allocated_tensor = it->second;
-            device_bank.storage[uid].tensor.copy_to(allocated_tensor);
+            auto& allocated_tensor = it->second;
+            auto& data = device_bank.storage.at(uid).tensor;
+            dev_guard.unlock();
+
+            data.copy_to(allocated_tensor);
+
+            std::unique_lock<std::mutex> guard(device_bank.mutex);
             device_bank.storage.at(uid).tensor = std::move(allocated_tensor);
 
             // Detach the evaluated LazyTensor from its memory here - when it is 100%
