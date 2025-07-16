@@ -7,6 +7,9 @@
 #include <memory>
 #include <string>
 
+#include <thread>
+#include <chrono>
+
 #include "accuracy/comparator.hpp"
 #include "intel_npu/npu_private_properties.hpp"
 #include "just_sync_infer_request.hpp"
@@ -853,6 +856,13 @@ std::shared_ptr<ov::npuw::CompiledModel> ov::npuw::CompiledModel::import_model(
     NPUW_ASSERT(compiled_model && "Couldn't import NPUW compiled model!");
     read_and_finalize_bank(stream, compiled_model);
 
+
+    std::cout << "IMPORT DONE" << std::endl;
+    using namespace std::chrono_literals;
+    std::this_thread::sleep_for(10000ms);
+
+    throw 42;
+
     LOG_INFO("Done.");
     return compiled_model;
 }
@@ -1016,12 +1026,16 @@ std::shared_ptr<ov::npuw::CompiledModel> ov::npuw::CompiledModel::deserialize(
         std::shared_ptr<ov::Model> model_ptr;
         // Cache model's constants
         WeightsContext::ConstsCache consts_cache;
+        std::cout << "IMPORT COMPILED MODEL BEFORE LOADING WEIGHTS" << std::endl;
+        using namespace std::chrono_literals;
+        std::this_thread::sleep_for(10000ms);
         if (is_weightless) {
             if (properties.find(ov::weights_path.name()) != properties.end()) {
                 weights_path = properties.at(ov::weights_path.name()).as<std::string>();
                 NPUW_ASSERT(!weights_path.empty() &&
                             "Empty weights_path. Please provide WEIGHTS_PATH or MODEL_PTR in the configuration.");
             } else if (properties.find(ov::hint::model.name()) != properties.end()) {
+                std::cout << "MODEL PTR" << std::endl;
                 model_ptr = std::const_pointer_cast<ov::Model>(
                                 properties.at(ov::hint::model.name()).as<std::shared_ptr<const ov::Model>>())
                                 ->clone();
@@ -1048,6 +1062,7 @@ std::shared_ptr<ov::npuw::CompiledModel> ov::npuw::CompiledModel::deserialize(
                         consts_cache[{offset, size}] = node;
                     }
                 }
+                std::this_thread::sleep_for(10000ms);
             } else {
                 NPUW_ASSERT(false && "Blob is weightless but no WEIGHTS_PATH nor MODEL_PTR property is provided!");
             }
@@ -1056,14 +1071,16 @@ std::shared_ptr<ov::npuw::CompiledModel> ov::npuw::CompiledModel::deserialize(
         ov::npuw::s11n::Weights weights = nullptr;
         if (is_weightless) {
             if (!weights_path.empty()) {
+                std::cout << "WEIGHTS PATH" << std::endl;
                 auto mapped_memory = ov::load_mmap_object(weights_path);
                 weights = std::make_shared<ov::SharedBuffer<std::shared_ptr<ov::MappedMemory>>>(mapped_memory->data(),
                                                                                                 mapped_memory->size(),
                                                                                                 mapped_memory);
+                std::this_thread::sleep_for(10000ms);
             }
         }
 
-        WeightsContext ctx(weights, consts_cache, compiled->m_bf16_consts);
+        WeightsContext ctx(weights, consts_cache, compiled->m_bf16_consts); // could keeping it alive lead to double weight memory consumption?
 
         // Deserialize compiled submodels
         std::size_t subm_size = 0;
@@ -1080,6 +1097,7 @@ std::shared_ptr<ov::npuw::CompiledModel> ov::npuw::CompiledModel::deserialize(
                 // FIXME: workaround for import/export model since import model seems to reset the file pointer
                 std::string buf;
                 read(stream, buf);
+                std::cout << "READING COMPILED SUBM BLOB " << buf.size() << std::endl; // * sizeof(char)
                 std::stringstream buffer(buf);
                 compiled->m_compiled_submodels[i].compiled_model =
                     plugin->get_core()->import_model(buffer, compiled->m_dev_list[device_idx]);
